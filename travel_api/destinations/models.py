@@ -1,88 +1,83 @@
-"""
-destinations/models.py
-
-Destination model: the browsable catalog of tourist destinations that
-itineraries, accommodations, activities and reviews all hang off of.
-"""
-from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils.text import slugify
+from travel_api.validators import validate_image_file, validate_file_size
 
-from accounts.validators import validate_image_extension, validate_image_file_size
+class Tag(models.Model):
+    name = models.CharField(max_length=50, unique=True, help_text='Tag name')
+    slug = models.SlugField(max_length=50, unique=True, help_text='URL slug')
+    class Meta:
+        ordering = ['name']
+    def __str__(self):
+        return self.name
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.name)
+        super().save(*args, **kwargs)
 
+class Category(models.Model):
+    name = models.CharField(max_length=100, unique=True, help_text='Category name')
+    slug = models.SlugField(max_length=100, unique=True, help_text='URL slug')
+    description = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to='categories/', blank=True, null=True, validators=[validate_image_file])
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'categories'
+    def __str__(self):
+        return self.name
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.name)
+        super().save(*args, **kwargs)
 
 class Destination(models.Model):
-    """A tourist destination that can be searched, filtered and booked around."""
-
-    class ClimateChoices(models.TextChoices):
-        TROPICAL = 'tropical', 'Tropical'
-        DRY = 'dry', 'Dry'
-        TEMPERATE = 'temperate', 'Temperate'
-        CONTINENTAL = 'continental', 'Continental'
-        POLAR = 'polar', 'Polar'
-
-    class CategoryChoices(models.TextChoices):
-        BEACH = 'beach', 'Beach'
-        MOUNTAIN = 'mountain', 'Mountain'
-        CITY = 'city', 'City'
-        CULTURAL = 'cultural', 'Cultural'
-        ADVENTURE = 'adventure', 'Adventure'
-        RELAXATION = 'relaxation', 'Relaxation'
-
-    name = models.CharField(max_length=200, unique=True, help_text='Destination display name.')
-    slug = models.SlugField(max_length=220, unique=True, blank=True, help_text='URL-friendly identifier.')
-    country = models.CharField(max_length=100, help_text='Country this destination is in.')
-    description = models.TextField(help_text='Long-form description shown on the detail page.')
-    category = models.CharField(max_length=20, choices=CategoryChoices.choices, help_text='Primary destination category.')
-    climate = models.CharField(max_length=20, choices=ClimateChoices.choices, help_text='Dominant climate type.')
-    best_time_to_visit = models.CharField(max_length=200, blank=True, help_text='E.g. "April - June".')
-    avg_daily_cost = models.DecimalField(
-        max_digits=10, decimal_places=2, validators=[MinValueValidator(0)],
-        help_text='Average daily cost in USD, used for budget filtering.',
-    )
-    image = models.ImageField(
-        upload_to='destinations/', null=True, blank=True,
-        validators=[validate_image_file_size, validate_image_extension],
-    )
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    is_active = models.BooleanField(default=True, help_text='Inactive destinations are hidden from search.')
+    name = models.CharField(max_length=200, help_text='Destination name')
+    slug = models.SlugField(max_length=200, unique=True, help_text='URL slug')
+    country = models.CharField(max_length=100, help_text='Country')
+    city = models.CharField(max_length=100, help_text='City')
+    region = models.CharField(max_length=100, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, blank=True, null=True, help_text='Latitude')
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, blank=True, null=True, help_text='Longitude')
+    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name='destinations', help_text='Category')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='destinations', help_text='Tags')
+    image = models.ImageField(upload_to='destinations/', blank=True, null=True, validators=[validate_image_file, validate_file_size])
+    is_featured = models.BooleanField(default=False, help_text='Featured')
+    avg_rating = models.FloatField(default=0.0, help_text='Cached average rating')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['name']
         indexes = [
-            models.Index(fields=['country', 'category']),
-            models.Index(fields=['climate']),
-            models.Index(fields=['avg_daily_cost']),
+            models.Index(fields=['country'], name='idx_dest_country'),
+            models.Index(fields=['city'], name='idx_dest_city'),
+            models.Index(fields=['is_featured'], name='idx_dest_featured'),
+            models.Index(fields=['avg_rating'], name='idx_dest_rating'),
         ]
 
     def __str__(self):
-        return f"{self.name}, {self.country}"
+        return f'{self.name}, {self.country}'
 
     def save(self, *args, **kwargs):
-        """Auto-generate a slug from the name if one wasn't supplied."""
         if not self.slug:
-            from django.utils.text import slugify
-            self.slug = slugify(self.name)
+            self.slug = slugify(f'{self.name}-{self.country}')
         super().save(*args, **kwargs)
 
-    def clean(self):
-        """Model-level validation: latitude/longitude must be provided together."""
-        from django.core.exceptions import ValidationError
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValidationError('Both latitude and longitude must be provided together, or neither.')
+    def update_average_rating(self):
+        from reviews.models import Review
+        result = Review.objects.filter(destination=self).aggregate(avg=models.Avg('rating'))
+        self.avg_rating = round(result['avg'] or 0, 1)
+        self.save(update_fields=['avg_rating', 'updated_at'])
 
-    @property
-    def average_rating(self):
-        """Business-logic method: compute the mean review rating for this destination."""
-        result = self.reviews.aggregate(models.Avg('rating'))
-        return round(result['rating__avg'] or 0, 2)
+    def get_top_activities(self, limit=5):
+        return self.activities.order_by('-rating')[:limit]
 
-    def budget_tier(self):
-        """Business-logic method: classify the destination by average daily cost."""
-        if self.avg_daily_cost < 100:
-            return 'budget'
-        elif self.avg_daily_cost < 250:
-            return 'moderate'
-        return 'luxury'
+class DestinationPhoto(models.Model):
+    destination = models.ForeignKey(Destination, on_delete=models.CASCADE, related_name='photos', help_text='Destination')
+    image = models.ImageField(upload_to='destinations/photos/', validators=[validate_image_file, validate_file_size])
+    caption = models.CharField(max_length=255, blank=True, default='')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ['-uploaded_at']
+    def __str__(self):
+        return f'Photo of {self.destination.name}'

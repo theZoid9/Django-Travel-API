@@ -1,24 +1,9 @@
-"""
-itineraries/filters.py
-
-Custom FilterSet for itineraries: budget range, date range, destination
-country, and multi-select status filtering.
-"""
-from django_filters import rest_framework as filters
-
+import django_filters
 from .models import Itinerary
 
-
-class ItineraryFilter(filters.FilterSet):
-    """Custom filters for itineraries."""
-
-    min_budget = filters.NumberFilter(field_name='budget', lookup_expr='gte')
-    max_budget = filters.NumberFilter(field_name='budget', lookup_expr='lte')
-    start_date_after = filters.DateFilter(field_name='start_date', lookup_expr='gte')
-    start_date_before = filters.DateFilter(field_name='start_date', lookup_expr='lte')
-    destination_country = filters.CharFilter(field_name='destination__country', lookup_expr='iexact')
-    status = filters.MultipleChoiceFilter(choices=Itinerary.StatusChoices.choices)
-
+class ItineraryFilter(django_filters.FilterSet):
+    min_start_date = django_filters.DateFilter(field_name='start_date', lookup_expr='gte')
+    max_start_date = django_filters.DateFilter(field_name='start_date', lookup_expr='lte')
     class Meta:
         model = Itinerary
-        fields = ['status', 'destination', 'is_public']
+        fields = ['status', 'owner', 'min_start_date', 'max_start_date']

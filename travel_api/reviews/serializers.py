@@ -1,38 +1,33 @@
-"""reviews/serializers.py"""
 from rest_framework import serializers
-
-from .models import Review
-
+from .models import Review, ActivityReview
 
 class ReviewSerializer(serializers.ModelSerializer):
-    """Full serializer for reviews, with the author's username surfaced read-only."""
-
-    username = serializers.CharField(source='user.username', read_only=True)
-    target_name = serializers.ReadOnlyField()
-
+    username = serializers.SerializerMethodField(help_text='Author name')
+    destination_name = serializers.CharField(source='destination.name', read_only=True)
     class Meta:
         model = Review
-        fields = '__all__'
-        read_only_fields = ['id', 'user', 'helpful_count', 'created_at', 'updated_at']
-
-    def validate(self, data):
-        """Object-level validation mirroring the model's clean() rule."""
-        destination = data.get('destination', getattr(self.instance, 'destination', None))
-        accommodation = data.get('accommodation', getattr(self.instance, 'accommodation', None))
-        activity = data.get('activity', getattr(self.instance, 'activity', None))
-        targets = [destination, accommodation, activity]
-        if sum(1 for t in targets if t) != 1:
-            raise serializers.ValidationError('Review must be for exactly one item.')
-        return data
-
+        fields = ['id', 'user', 'username', 'destination', 'destination_name', 'rating', 'title', 'comment', 'is_anonymous', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'created_at', 'updated_at']
+    def get_username(self, obj):
+        return 'Anonymous' if obj.is_anonymous else obj.user.username
     def validate_rating(self, value):
-        """Field-level validation."""
-        if not (1 <= value <= 5):
-            raise serializers.ValidationError('Rating must be between 1 and 5.')
+        if not (1 <= value <= 5): raise serializers.ValidationError('Rating 1-5.')
         return value
-
     def create(self, validated_data):
-        """Attach the requesting user automatically."""
-        request = self.context.get('request')
-        validated_data['user'] = request.user
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+class ActivityReviewSerializer(serializers.ModelSerializer):
+    username = serializers.SerializerMethodField(help_text='Author name')
+    activity_name = serializers.CharField(source='activity.name', read_only=True)
+    class Meta:
+        model = ActivityReview
+        fields = ['id', 'user', 'username', 'activity', 'activity_name', 'rating', 'title', 'comment', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'created_at', 'updated_at']
+    def get_username(self, obj): return obj.user.username
+    def validate_rating(self, value):
+        if not (1 <= value <= 5): raise serializers.ValidationError('Rating 1-5.')
+        return value
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
         return super().create(validated_data)

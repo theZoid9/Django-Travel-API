@@ -1,75 +1,93 @@
-"""
-bookings/views.py
-
-FBV: bulk_update_bookings (atomic multi-record update).
-CBV: BookingDetailView (RetrieveUpdateDestroyAPIView).
-"""
-from django.db import transaction
-from rest_framework import generics, status
+from rest_framework import viewsets, status, generics
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from drf_spectacular.utils import extend_schema, OpenApiExample
+from django.db import transaction
+from .models import Accommodation, Activity, AccommodationBooking, ActivityBooking
+from .serializers import AccommodationListSerializer, AccommodationDetailSerializer, ActivityListSerializer, ActivityDetailSerializer, AccommodationBookingSerializer, ActivityBookingSerializer
+from .filters import AccommodationFilter, ActivityFilter, AccommodationBookingFilter, ActivityBookingFilter
 
-from .models import Booking
-from .permissions import IsBookingOwner
-from .serializers import BookingDetailSerializer
+class AccommodationViewSet(viewsets.ModelViewSet):
+    permission_classes = [AllowAny]
+    filterset_class = AccommodationFilter
+    search_fields = ['name', 'address', 'destination__name']
+    ordering_fields = ['price_per_night', 'rating', 'name']
+    ordering = ['name']
+    def get_queryset(self):
+        return Accommodation.objects.select_related('destination').all()
+    def get_serializer_class(self):
+        if self.action == 'list': return AccommodationListSerializer
+        return AccommodationDetailSerializer
+    def get_permissions(self):
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated()]
+        return [AllowAny()]
 
+class ActivityViewSet(viewsets.ModelViewSet):
+    permission_classes = [AllowAny]
+    filterset_class = ActivityFilter
+    search_fields = ['name', 'description', 'destination__name']
+    ordering_fields = ['price', 'rating', 'duration_minutes', 'name']
+    ordering = ['name']
+    def get_queryset(self):
+        return Activity.objects.select_related('destination').only('id', 'name', 'destination__name', 'activity_type', 'price', 'duration_minutes', 'rating', 'image', 'is_available', 'max_participants', 'description').all()
+    def get_serializer_class(self):
+        if self.action == 'list': return ActivityListSerializer
+        return ActivityDetailSerializer
+    def get_permissions(self):
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated()]
+        return [AllowAny()]
 
-@extend_schema(
-    request={'application/json': {'type': 'object', 'example': {'updates': [{'id': 1, 'status': 'confirmed'}]}}},
-    responses={200: dict},
-    examples=[OpenApiExample('Bulk update example', value={'updates': [{'id': 1, 'status': 'confirmed'}, {'id': 2, 'status': 'cancelled'}]})],
-)
+class AccommodationBookingListCreateView(generics.ListCreateAPIView):
+    serializer_class = AccommodationBookingSerializer
+    permission_classes = [IsAuthenticated]
+    filterset_class = AccommodationBookingFilter
+    def get_queryset(self):
+        return AccommodationBooking.objects.select_related('itinerary', 'accommodation').filter(itinerary__owner=self.request.user).order_by('-created_at')
+
+class ActivityBookingListCreateView(generics.ListCreateAPIView):
+    serializer_class = ActivityBookingSerializer
+    permission_classes = [IsAuthenticated]
+    filterset_class = ActivityBookingFilter
+    def get_queryset(self):
+        return ActivityBooking.objects.select_related('itinerary', 'activity').filter(itinerary__owner=self.request.user).order_by('-created_at')
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def bulk_update_bookings(request):
-    """
-    Update multiple bookings belonging to the current user in a single
-    atomic request. Body: {"updates": [{"id": 1, "status": "confirmed"}, ...]}
-    """
-    updates = request.data.get('updates', [])
-    if not isinstance(updates, list) or not updates:
-        return Response({'updates': 'Must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    valid_statuses = dict(Booking.StatusChoices.choices)
-    succeeded, failed = [], []
-
+    bookings_data = request.data.get('bookings', [])
+    if not bookings_data:
+        return Response({'detail': 'No bookings provided.'}, status=status.HTTP_400_BAD_REQUEST)
+    success_count = 0
+    failure_count = 0
+    errors = []
     try:
         with transaction.atomic():
-            for item in updates:
-                booking_id = item.get('id')
+            for item in bookings_data:
+                btype = item.get('type')
+                bid = item.get('id')
                 new_status = item.get('status')
-                if new_status not in valid_statuses:
-                    failed.append({'id': booking_id, 'error': 'Invalid status.'})
+                if not all([btype, bid, new_status]):
+                    failure_count += 1
+                    errors.append({'id': bid, 'error': 'Missing fields.'})
                     continue
                 try:
-                    booking = Booking.objects.get(pk=booking_id, user=request.user)
-                except Booking.DoesNotExist:
-                    failed.append({'id': booking_id, 'error': 'Not found.'})
-                    continue
-                booking.status = new_status
-                booking.save(update_fields=['status', 'updated_at'])
-                succeeded.append(booking_id)
-    except Exception as exc:  # noqa: BLE001 - guard the bulk operation as a whole
-        return Response({'error': f'Bulk update failed: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({
-        'success_count': len(succeeded),
-        'failure_count': len(failed),
-        'succeeded_ids': succeeded,
-        'failures': failed,
-    }, status=status.HTTP_200_OK)
-
-
-class BookingDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve, update, or delete a specific booking owned by the current user."""
-
-    serializer_class = BookingDetailSerializer
-    permission_classes = [IsAuthenticated, IsBookingOwner]
-
-    def get_queryset(self):
-        """Query optimization: select_related the FKs the serializer needs."""
-        return Booking.objects.filter(user=self.request.user).select_related(
-            'accommodation', 'itinerary', 'activity'
-        )
+                    if btype == 'accommodation':
+                        b = AccommodationBooking.objects.get(pk=bid, itinerary__owner=request.user)
+                    elif btype == 'activity':
+                        b = ActivityBooking.objects.get(pk=bid, itinerary__owner=request.user)
+                    else:
+                        failure_count += 1
+                        errors.append({'id': bid, 'error': 'Invalid type.'})
+                        continue
+                    b.status = new_status
+                    b.save(update_fields=['status', 'updated_at'])
+                    success_count += 1
+                except (AccommodationBooking.DoesNotExist, ActivityBooking.DoesNotExist):
+                    failure_count += 1
+                    errors.append({'id': bid, 'error': 'Not found.'})
+                except Exception as e:
+                    failure_count += 1
+                    errors.append({'id': bid, 'error': str(e)})
+    except Exception as e:
+        return Response({'detail': 'Bulk op failed.', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({'success_count': success_count, 'failure_count': failure_count, 'errors': errors})

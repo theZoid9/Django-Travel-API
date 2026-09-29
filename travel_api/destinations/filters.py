@@ -1,33 +1,18 @@
-"""
-destinations/filters.py
+import django_filters
+from .models import Destination, Category
 
-Custom FilterSet for advanced destination search (climate, category,
-country, and a derived budget_range filter).
-"""
-from django_filters import rest_framework as filters
-
-from .models import Destination
-
-
-class DestinationFilter(filters.FilterSet):
-    """Advanced destination filtering, including a derived budget-tier filter."""
-
-    climate = filters.MultipleChoiceFilter(choices=Destination.ClimateChoices.choices)
-    category = filters.MultipleChoiceFilter(choices=Destination.CategoryChoices.choices)
-    min_cost = filters.NumberFilter(field_name='avg_daily_cost', lookup_expr='gte')
-    max_cost = filters.NumberFilter(field_name='avg_daily_cost', lookup_expr='lte')
-    budget_range = filters.CharFilter(method='filter_by_budget')
-
+class DestinationFilter(django_filters.FilterSet):
+    country = django_filters.CharFilter(lookup_expr='icontains')
+    city = django_filters.CharFilter(lookup_expr='icontains')
+    min_rating = django_filters.NumberFilter(field_name='avg_rating', lookup_expr='gte')
+    max_rating = django_filters.NumberFilter(field_name='avg_rating', lookup_expr='lte')
+    tag = django_filters.CharFilter(field_name='tags__slug', lookup_expr='iexact')
     class Meta:
         model = Destination
-        fields = ['country', 'category', 'climate', 'is_active']
+        fields = ['country', 'city', 'is_featured', 'category', 'min_rating', 'max_rating']
 
-    def filter_by_budget(self, queryset, name, value):
-        """Custom filter method mapping a friendly label to a cost range."""
-        if value == 'budget':
-            return queryset.filter(avg_daily_cost__lt=100)
-        elif value == 'moderate':
-            return queryset.filter(avg_daily_cost__gte=100, avg_daily_cost__lt=250)
-        elif value == 'luxury':
-            return queryset.filter(avg_daily_cost__gte=250)
-        return queryset
+class CategoryFilter(django_filters.FilterSet):
+    name = django_filters.CharFilter(lookup_expr='icontains')
+    class Meta:
+        model = Category
+        fields = ['name']

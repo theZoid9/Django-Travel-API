@@ -1,77 +1,56 @@
-"""
-accounts/models.py
-
-Custom User model extending AbstractUser, plus a SearchPreference model used
-by the trip_search function-based view to persist a user's saved search
-filters (demonstrates FBV POST + a simple related model).
-"""
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from travel_api.validators import validate_image_file, validate_file_size
 
-from .validators import validate_image_file_size
+class CustomUser(AbstractUser):
+    class TravelStyle(models.TextChoices):
+        BUDGET = 'budget', 'Budget'
+        MID_RANGE = 'mid_range', 'Mid-Range'
+        LUXURY = 'luxury', 'Luxury'
+        ADVENTURE = 'adventure', 'Adventure'
 
-
-class User(AbstractUser):
-    """
-    Custom user model with travel-specific profile fields.
-
-    Extends AbstractUser so we keep Django's built-in auth/permission
-    machinery while adding the fields this API needs.
-    """
-    email = models.EmailField(unique=True, help_text='Unique email address used for login/notifications.')
-    phone = models.CharField(max_length=20, blank=True, help_text='Contact phone number, optional.')
-    date_of_birth = models.DateField(null=True, blank=True, help_text='Used for age-appropriate recommendations.')
-    bio = models.TextField(max_length=500, blank=True, help_text='Short user biography.')
-    profile_picture = models.ImageField(
-        upload_to='profiles/',
-        null=True,
-        blank=True,
-        validators=[validate_image_file_size],
-        help_text='Profile photo, max 5MB.',
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    avatar = models.ImageField(
+        upload_to='avatars/', blank=True, null=True,
+        validators=[validate_image_file, validate_file_size],
+        help_text='User profile photo (max 5 MB)'
     )
-    travel_preferences = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text='Free-form JSON of preferred climates/categories used for recommendations.',
+    date_of_birth = models.DateField(blank=True, null=True)
+    travel_style = models.CharField(
+        max_length=20, choices=TravelStyle.choices,
+        blank=True, default='', help_text='Preferred travel style'
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['-created_at']
-        verbose_name = 'User'
-        verbose_name_plural = 'Users'
-        indexes = [
-            models.Index(fields=['email']),
-        ]
+        db_table = 'accounts_custom_user'
+        indexes = [models.Index(fields=['email'], name='idx_user_email')]
 
     def __str__(self):
-        return self.username
+        return f'{self.username} ({self.email})'
 
-    @property
-    def full_name(self):
-        """Return the user's full name, falling back to username."""
-        return f"{self.first_name} {self.last_name}".strip() or self.username
+    def get_full_display_name(self):
+        return self.get_full_name() or self.username
 
-    def total_trips(self):
-        """Business-logic helper: count of itineraries this user owns."""
-        return self.owned_itineraries.count()
-
-
-class SearchPreference(models.Model):
-    """
-    Stores a user's saved trip-search preferences (used by the
-    itineraries.trip_search FBV's POST action).
-    """
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name='search_preferences'
+class UserProfile(models.Model):
+    user = models.OneToOneField(
+        'CustomUser', on_delete=models.CASCADE,
+        related_name='profile', help_text='Linked user account'
     )
-    name = models.CharField(max_length=100, help_text='Label for this saved search.')
-    filters = models.JSONField(default=dict, help_text='Serialized filter/query params.')
-    created_at = models.DateTimeField(auto_now_add=True)
+    bio = models.TextField(blank=True, default='', help_text='Short biography')
+    preferred_currency = models.CharField(max_length=3, default='USD', help_text='ISO 4217 code')
+    home_country = models.CharField(max_length=100, blank=True, default='')
+    favorite_destinations = models.ManyToManyField(
+        'destinations.Destination', blank=True,
+        related_name='favorited_by', help_text='Favorite destinations'
+    )
 
     class Meta:
-        ordering = ['-created_at']
+        db_table = 'accounts_user_profile'
+        verbose_name = 'User Profile'
+        verbose_name_plural = 'User Profiles'
 
     def __str__(self):
-        return f"{self.user.username}: {self.name}"
+        return f'Profile of {self.user.username}'
+
+    def favorite_count(self):
+        return self.favorite_destinations.count()

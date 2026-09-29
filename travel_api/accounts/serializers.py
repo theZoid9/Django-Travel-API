@@ -1,108 +1,92 @@
-"""
-accounts/serializers.py
-
-Serializers covering registration, login, profile retrieval/update,
-password change and password reset flows.
-"""
-from django.contrib.auth import get_user_model, password_validation
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth import get_user_model
+from .models import UserProfile
 
 User = get_user_model()
 
-
-class UserSerializer(serializers.ModelSerializer):
-    """Base read/update serializer for the profile endpoints."""
-    full_name = serializers.ReadOnlyField()
-    total_trips = serializers.SerializerMethodField(help_text='Number of trips this user owns.')
-
+class BaseUserSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField(help_text='Best available display name')
     class Meta:
         model = User
-        fields = [
-            'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
-            'phone', 'date_of_birth', 'bio', 'profile_picture',
-            'travel_preferences', 'total_trips', 'created_at',
-        ]
-        read_only_fields = ['id', 'username', 'created_at']
-
-    def get_total_trips(self, obj):
-        return obj.total_trips()
-
+        fields = ['id', 'username', 'email', 'full_name']
+    def get_full_name(self, obj):
+        return obj.get_full_display_name()
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
-    """
-    Serializer for new-account creation. Demonstrates write-only fields for
-    sensitive data (password) and a custom create() override.
-    """
-    password = serializers.CharField(
-        write_only=True, min_length=8, help_text='At least 8 characters.'
-    )
-    password_confirm = serializers.CharField(write_only=True, help_text='Repeat the password.')
-
+    password = serializers.CharField(write_only=True, min_length=8, help_text='Password (min 8 chars)')
+    password_confirm = serializers.CharField(write_only=True, help_text='Confirm password')
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'password', 'password_confirm', 'first_name', 'last_name']
+        fields = ['id', 'username', 'email', 'password', 'password_confirm', 'phone', 'travel_style']
         read_only_fields = ['id']
 
     def validate_email(self, value):
-        """Field-level validation: ensure the email isn't already registered."""
-        if User.objects.filter(email__iexact=value).exists():
+        if User.objects.filter(email=value).exists():
             raise serializers.ValidationError('A user with this email already exists.')
         return value
 
-    def validate(self, data):
-        """Object-level validation: passwords must match and pass Django's validators."""
-        if data['password'] != data['password_confirm']:
-            raise serializers.ValidationError({'password_confirm': 'Passwords do not match.'})
-        try:
-            password_validation.validate_password(data['password'])
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({'password': list(exc.messages)})
-        return data
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs.pop('password_confirm'):
+            raise serializers.ValidationError({'password': 'Passwords do not match.'})
+        return attrs
 
     def create(self, validated_data):
-        """Create the user with a properly hashed password."""
-        validated_data.pop('password_confirm')
         password = validated_data.pop('password')
         user = User(**validated_data)
         user.set_password(password)
         user.save()
         return user
 
+class UserSerializer(BaseUserSerializer):
+    travel_style = serializers.CharField(source='get_travel_style_display', read_only=True)
+    class Meta(BaseUserSerializer.Meta):
+        fields = ['id', 'username', 'email', 'full_name', 'phone', 'travel_style', 'avatar', 'date_of_birth']
+        read_only_fields = ['id', 'username']
 
-class LoginSerializer(serializers.Serializer):
-    """Serializer validating login credentials (not tied to a model)."""
-    username = serializers.CharField()
-    password = serializers.CharField(write_only=True, style={'input_type': 'password'})
+class UserProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    favorite_count = serializers.SerializerMethodField(help_text='Number of favorite destinations')
+    class Meta:
+        model = UserProfile
+        fields = ['id', 'username', 'bio', 'preferred_currency', 'home_country', 'favorite_count']
+        read_only_fields = ['id', 'username']
 
+    def get_favorite_count(self, obj):
+        return obj.favorite_count()
 
-class PasswordChangeSerializer(serializers.Serializer):
-    """Serializer for authenticated password-change requests."""
-    old_password = serializers.CharField(write_only=True)
-    new_password = serializers.CharField(write_only=True, min_length=8)
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        if self.context.get('include_favorites', False):
+            rep['favorite_destinations'] = list(instance.favorite_destinations.values_list('id', flat=True))
+        return rep
 
-    def validate_new_password(self, value):
-        try:
-            password_validation.validate_password(value)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(list(exc.messages))
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True, help_text='Current password')
+    new_password = serializers.CharField(write_only=True, min_length=8, help_text='New password')
+    new_password_confirm = serializers.CharField(write_only=True, help_text='Confirm new password')
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError('Old password is incorrect.')
         return value
 
-
-class PasswordResetRequestSerializer(serializers.Serializer):
-    """Serializer for requesting a password reset email/token."""
-    email = serializers.EmailField()
-
-
-class PasswordResetConfirmSerializer(serializers.Serializer):
-    """Serializer for confirming a password reset with uid/token."""
-    uid = serializers.CharField()
-    token = serializers.CharField()
-    new_password = serializers.CharField(write_only=True, min_length=8)
-
     def validate_new_password(self, value):
-        try:
-            password_validation.validate_password(value)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(list(exc.messages))
+        validate_password(value)
         return value
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs.pop('new_password_confirm'):
+            raise serializers.ValidationError({'new_password': 'Passwords do not match.'})
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save()
+        return user

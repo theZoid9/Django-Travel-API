@@ -1,41 +1,24 @@
-"""
-itineraries/permissions.py
+from rest_framework.permissions import BasePermission, SAFE_METHODS
+from .models import TripCollaborator
 
-Custom object-level permission classes for trips: ownership,
-owner-or-collaborator read access, and role-based edit access.
-"""
-from rest_framework import permissions
-
-
-class IsTripOwner(permissions.BasePermission):
-    """Only the trip owner may perform the action."""
-
+class IsTripOwner(BasePermission):
+    message = 'Only the trip owner can perform this action.'
     def has_object_permission(self, request, view, obj):
         return obj.owner == request.user
 
-
-class IsTripOwnerOrCollaborator(permissions.BasePermission):
-    """
-    Owners and collaborators may safely read a trip; only the owner may
-    perform unsafe (write) methods.
-    """
-
+class IsTripOwnerOrCollaborator(BasePermission):
+    message = 'You do not have permission for this action.'
     def has_object_permission(self, request, view, obj):
-        if request.method in permissions.SAFE_METHODS:
-            return obj.owner == request.user or request.user in obj.collaborators.all()
-        return obj.owner == request.user
+        if obj.owner == request.user: return True
+        try:
+            c = TripCollaborator.objects.get(itinerary=obj, user=request.user)
+        except TripCollaborator.DoesNotExist:
+            return False
+        if request.method in SAFE_METHODS: return True
+        return c.role in ('owner', 'collaborator')
 
-
-class CanEditItinerary(permissions.BasePermission):
-    """
-    Role-based edit permission: the owner can always edit; collaborators
-    can edit only if their role is 'editor' or 'admin'.
-    """
-
+class IsTripParticipant(BasePermission):
+    message = 'You are not a participant on this trip.'
     def has_object_permission(self, request, view, obj):
-        if request.method in permissions.SAFE_METHODS:
-            return obj.owner == request.user or request.user in obj.collaborators.all()
-        if obj.owner == request.user:
-            return True
-        collaboration = obj.collaborations.filter(user=request.user).first()
-        return bool(collaboration and collaboration.role in ['editor', 'admin'])
+        if obj.owner == request.user: return True
+        return TripCollaborator.objects.filter(itinerary=obj, user=request.user).exists()

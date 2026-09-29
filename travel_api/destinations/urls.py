@@ -1,9 +1,6 @@
-"""destinations/urls.py"""
 from django.urls import path
-from .views import DestinationSearchView
-
+from . import views
 app_name = 'destinations'
-
 urlpatterns = [
-    path('search/', DestinationSearchView.as_view(), name='destination-search'),
+    path('<int:destination_id>/photos/add/', views.DestinationPhotoUploadView.as_view(), name='photo_upload'),
 ]

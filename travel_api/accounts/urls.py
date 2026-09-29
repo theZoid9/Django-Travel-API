@@ -1,14 +1,14 @@
-"""accounts/urls.py - authentication & profile endpoints."""
 from django.urls import path
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from . import views
 
 app_name = 'accounts'
 
 urlpatterns = [
-    path('register/', views.register, name='register'),
-    path('login/', views.login, name='login'),
-    path('profile/', views.UserProfileView.as_view(), name='profile'),
-    path('password/change/', views.password_change, name='password-change'),
-    path('password/reset/', views.password_reset_request, name='password-reset-request'),
-    path('password/reset/confirm/', views.password_reset_confirm, name='password-reset-confirm'),
+    path('login/', TokenObtainPairView.as_view(), name='token_obtain'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('register/', views.UserRegistrationView.as_view(), name='register'),
+    path('profile/', views.UserProfileDetailView.as_view(), name='profile'),
+    path('change-password/', views.ChangePasswordView.as_view(), name='change_password'),
+    path('me/', views.UserMeView.as_view(), name='me'),
 ]

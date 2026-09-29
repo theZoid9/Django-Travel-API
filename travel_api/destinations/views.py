@@ -1,80 +1,88 @@
-"""
-destinations/views.py
-
-Class-based view: DestinationSearchView, an APIView demonstrating custom
-Q-object search, ranking and a POST action to save a search as a
-preference (in combination with the accounts.SearchPreference model).
-"""
-from django.db.models import Q
-from rest_framework import status
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from rest_framework import viewsets, status, generics, parsers
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.response import Response
-from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+from django.db.models import Q, Avg, Count
+from .models import Category, Tag, Destination, DestinationPhoto
+from .serializers import TagSerializer, CategorySerializer, DestinationListSerializer, DestinationDetailSerializer, DestinationCreateUpdateSerializer, DestinationPhotoSerializer
+from .filters import DestinationFilter, CategoryFilter
 
-from accounts.models import SearchPreference
-from .models import Destination
-from .serializers import DestinationListSerializer
+class TagViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Tag.objects.all()
+    serializer_class = TagSerializer
+    permission_classes = [AllowAny]
+    search_fields = ['name']
 
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Category.objects.prefetch_related('destinations').all()
+    serializer_class = CategorySerializer
+    permission_classes = [AllowAny]
+    filterset_class = CategoryFilter
+    search_fields = ['name', 'description']
+    ordering_fields = ['name']
 
-class DestinationSearchView(APIView):
-    """
-    Advanced destination search with custom ranking.
+class DestinationViewSet(viewsets.ModelViewSet):
+    permission_classes = [AllowAny]
+    filterset_class = DestinationFilter
+    search_fields = ['name', 'country', 'city', 'description']
+    ordering_fields = ['name', 'avg_rating', 'created_at']
+    ordering = ['name']
 
-    GET: search destinations by free-text query across several fields,
-    ranked with a simple relevance score.
-    POST: persist the current search as a named preference for the user.
-    """
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    def get_queryset(self):
+        return Destination.objects.select_related('category').prefetch_related('tags', 'photos').annotate(review_count=Count('reviews', distinct=True), activity_count=Count('activities', distinct=True)).all()
 
-    @extend_schema(
-        parameters=[
-            OpenApiParameter(name='q', description='Free text search across name/country/description', type=str),
-            OpenApiParameter(name='max_cost', description='Maximum average daily cost', type=float),
-        ],
-        responses={200: DestinationListSerializer(many=True)},
-    )
-    def get(self, request):
-        """Custom search implementation using Q objects and simple ranking."""
-        query = request.query_params.get('q', '').strip()
-        max_cost = request.query_params.get('max_cost')
+    def get_serializer_class(self):
+        if self.action == 'list': return DestinationListSerializer
+        if self.action == 'retrieve': return DestinationDetailSerializer
+        if self.action in ('create', 'update', 'partial_update'): return DestinationCreateUpdateSerializer
+        return DestinationDetailSerializer
 
-        queryset = Destination.objects.filter(is_active=True)
+    def get_permissions(self):
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAdminUser()]
+        return [AllowAny()]
 
+    @action(detail=True, methods=['get'], url_path='photos')
+    def list_photos(self, request, pk=None):
+        dest = self.get_object()
+        return Response(DestinationPhotoSerializer(dest.photos.all(), many=True).data)
+
+    @action(detail=True, methods=['post'], url_path='upload-photo', parser_classes=[parsers.MultiPartParser])
+    def upload_photo(self, request, pk=None):
+        dest = self.get_object()
+        s = DestinationPhotoSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        s.save(destination=dest)
+        return Response(s.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='featured')
+    def featured(self, request):
+        qs = self.get_queryset().filter(is_featured=True)
+        page = self.paginate_queryset(qs)
+        s = DestinationListSerializer(page or qs, many=True)
+        return self.get_paginated_response(s.data) if page else Response(s.data)
+
+    @action(detail=False, methods=['get'], url_path='search-advanced')
+    def search_advanced(self, request):
+        query = request.query_params.get('q', '')
+        country = request.query_params.get('country', '')
+        min_rating = request.query_params.get('min_rating', 0)
+        q_filter = Q()
         if query:
-            queryset = queryset.filter(
-                Q(name__icontains=query)
-                | Q(country__icontains=query)
-                | Q(description__icontains=query)
-                | Q(category__icontains=query)
-            )
-        if max_cost:
-            try:
-                queryset = queryset.filter(avg_daily_cost__lte=float(max_cost))
-            except ValueError:
-                return Response({'max_cost': 'Must be a number.'}, status=status.HTTP_400_BAD_REQUEST)
+            q_filter |= Q(name__icontains=query) | Q(city__icontains=query) | Q(description__icontains=query)
+        if country:
+            q_filter &= Q(country__icontains=country)
+        if min_rating:
+            q_filter &= Q(avg_rating__gte=float(min_rating))
+        qs = self.get_queryset().filter(q_filter)
+        page = self.paginate_queryset(qs)
+        s = DestinationListSerializer(page or qs, many=True)
+        return self.get_paginated_response(s.data) if page else Response(s.data)
 
-        # Simple ranking: exact name matches first, then alphabetical.
-        results = sorted(
-            queryset,
-            key=lambda d: (query.lower() not in d.name.lower() if query else False, d.name),
-        )
-
-        serializer = DestinationListSerializer(results, many=True, context={'request': request})
-        return Response(serializer.data)
-
-    def post(self, request):
-        """Save the user's current search parameters as a named preference."""
-        if not request.user.is_authenticated:
-            return Response({'error': 'Authentication required to save searches.'}, status=status.HTTP_401_UNAUTHORIZED)
-
-        name = request.data.get('name')
-        filters = request.data.get('filters', {})
-        if not name:
-            return Response({'name': 'This field is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        preference = SearchPreference.objects.create(user=request.user, name=name, filters=filters)
-        return Response(
-            {'id': preference.id, 'name': preference.name, 'filters': preference.filters},
-            status=status.HTTP_201_CREATED,
-        )
+class DestinationPhotoUploadView(generics.CreateAPIView):
+    serializer_class = DestinationPhotoSerializer
+    permission_classes = [IsAdminUser]
+    parser_classes = [parsers.MultiPartParser]
+    def perform_create(self, serializer):
+        from .models import Destination
+        dest = Destination.objects.get(pk=self.kwargs['destination_id'])
+        serializer.save(destination=dest)

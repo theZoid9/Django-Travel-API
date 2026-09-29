@@ -1,91 +1,62 @@
-"""
-budgets/tests.py
-
-Model tests for Budget's total/spend calculations, plus API tests for the
-budget detail and expense list/create/delete endpoints.
-"""
 from datetime import date
-
-from django.contrib.auth import get_user_model
-from rest_framework import status
+from decimal import Decimal
+from django.test import TestCase
 from rest_framework.test import APITestCase
-
-from destinations.models import Destination
+from rest_framework import status
+from django.contrib.auth import get_user_model
 from itineraries.models import Itinerary
 from .models import Budget, Expense
 
 User = get_user_model()
 
-
-def make_destination():
-    return Destination.objects.create(
-        name='Cairo', country='Egypt', description='Ancient wonders',
-        category=Destination.CategoryChoices.CULTURAL, climate=Destination.ClimateChoices.DRY,
-        avg_daily_cost=80,
-    )
-
-
-class BudgetModelTests(APITestCase):
-    """Tests for the Budget model's computed totals."""
-
+class BudgetModelTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='budgeter', password='StrongPass123')
-        self.destination = make_destination()
-        self.itinerary = Itinerary.objects.create(
-            title='Egypt Trip', destination=self.destination, owner=self.user,
-            start_date=date(2026, 3, 1), end_date=date(2026, 3, 10), budget=1200,
-        )
+        self.user = User.objects.create_user(username='budgetuser', email='bu@e.com', password='pass1234')
+        self.itin = Itinerary.objects.create(title='Budget Trip', owner=self.user, start_date=date(2025,5,1), end_date=date(2025,5,10))
+        self.budget = Budget.objects.create(itinerary=self.itin, total_amount=5000, currency='USD')
+    def test_str(self): self.assertIn('5000', str(self.budget))
+    def test_spent_empty(self): self.assertEqual(self.budget.calculate_spent(), 0)
+    def test_spent_with_expenses(self):
+        Expense.objects.create(budget=self.budget, category='food', amount=100, description='Dinner', date=date(2025,5,2))
+        self.assertEqual(self.budget.calculate_spent(), Decimal('100'))
+    def test_remaining(self):
+        Expense.objects.create(budget=self.budget, category='food', amount=200, description='Lunch', date=date(2025,5,3))
+        self.assertEqual(self.budget.calculate_remaining(), Decimal('4800'))
+    def test_percentage_used(self):
+        Expense.objects.create(budget=self.budget, category='accommodation', amount=1000, description='Hotel', date=date(2025,5,1))
+        self.assertEqual(self.budget.percentage_used(), 20.0)
 
-    def test_total_budget_sums_categories(self):
-        """total_budget should sum all category allocations."""
-        budget = Budget.objects.create(
-            itinerary=self.itinerary, accommodation_budget=400, food_budget=200,
-            activities_budget=150, transport_budget=100,
-        )
-        self.assertEqual(budget.total_budget, 850)
+class ExpenseModelTest(TestCase):
+    def test_str(self):
+        u = User.objects.create_user(username='eu', email='eu@e.com', password='pass1234')
+        i = Itinerary.objects.create(title='Trip', owner=u, start_date=date(2025,1,1), end_date=date(2025,1,5))
+        b = Budget.objects.create(itinerary=i, total_amount=1000)
+        e = Expense.objects.create(budget=b, category='food', amount=50, description='Breakfast', date=date(2025,1,2))
+        self.assertIn('50', str(e))
+    def test_negative_amount(self):
+        u = User.objects.create_user(username='nu', email='nu@e.com', password='pass1234')
+        i = Itinerary.objects.create(title='Trip', owner=u, start_date=date(2025,1,1), end_date=date(2025,1,5))
+        b = Budget.objects.create(itinerary=i, total_amount=1000)
+        e = Expense(budget=b, category='other', amount=-10, description='Invalid', date=date(2025,1,2))
+        with self.assertRaises(Exception): e.full_clean()
 
-
-class BudgetAPITests(APITestCase):
-    """API tests for the budget and expense endpoints."""
-
+class BudgetAPITest(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='apibudgeter', password='StrongPass123')
-        self.client.force_authenticate(user=self.user)
-        self.destination = make_destination()
-        self.itinerary = Itinerary.objects.create(
-            title='Egypt Trip', destination=self.destination, owner=self.user,
-            start_date=date(2026, 3, 1), end_date=date(2026, 3, 10), budget=1200,
-        )
+        self.user = User.objects.create_user(username='budgetapi', email='ba@e.com', password='pass1234')
+        self.client.force_authenticate(self.user)
+    def test_create_budget(self):
+        i = Itinerary.objects.create(title='Trip', owner=self.user, start_date=date(2025,3,1), end_date=date(2025,3,10))
+        resp = self.client.post('/api/v1/budgets/', {'itinerary': i.pk, 'total_amount': 3000, 'currency': 'EUR'})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+    def test_list_budgets(self):
+        resp = self.client.get('/api/v1/budgets/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
-    def test_get_budget_detail_auto_creates_budget(self):
-        """GET on the budget detail endpoint should auto-create a Budget if missing."""
-        response = self.client.get(f'/api/v1/budgets/{self.itinerary.id}/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertTrue(Budget.objects.filter(itinerary=self.itinerary).exists())
-
-    def test_create_expense(self):
-        """POST to the expense list-create endpoint should create an Expense."""
-        data = {
-            'itinerary': self.itinerary.id, 'category': 'food',
-            'description': 'Dinner', 'amount': 45, 'date': '2026-03-02',
-        }
-        response = self.client.post(f'/api/v1/budgets/{self.itinerary.id}/expenses/', data)
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Expense.objects.count(), 1)
-
-    def test_delete_expense(self):
-        """DELETE on the expense detail endpoint should remove the expense."""
-        expense = Expense.objects.create(
-            itinerary=self.itinerary, category='food', description='Lunch', amount=20, date=date(2026, 3, 2),
-        )
-        response = self.client.delete(f'/api/v1/budgets/expenses/{expense.id}/')
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertEqual(Expense.objects.count(), 0)
-
-    def test_other_user_cannot_view_expenses(self):
-        """A non-owner, non-collaborator user should get an empty expense list."""
-        other = User.objects.create_user(username='otherbudgeter', email='otherbudgeter@example.com', password='pass123456')
-        self.client.force_authenticate(user=other)
-        response = self.client.get(f'/api/v1/budgets/{self.itinerary.id}/expenses/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data['results']), 0)
+class ExpenseSerializerTest(TestCase):
+    def test_negative_amount_fails(self):
+        from .serializers import ExpenseSerializer
+        u = User.objects.create_user(username='su', email='su@e.com', password='pass1234')
+        i = Itinerary.objects.create(title='Trip', owner=u, start_date=date(2025,1,1), end_date=date(2025,1,5))
+        b = Budget.objects.create(itinerary=i, total_amount=1000)
+        s = ExpenseSerializer(data={'budget': b.pk, 'category': 'food', 'amount': -5, 'description': 'Bad', 'date': '2025-01-02'})
+        self.assertFalse(s.is_valid())

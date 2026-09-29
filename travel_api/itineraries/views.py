@@ -1,191 +1,121 @@
-"""
-itineraries/views.py
-
-Function-based views (trip_search, generate_trip_report) and class-based
-views (ItineraryListCreateView, TripCollaborationView).
-"""
-from django.contrib.auth import get_user_model
-from django.db.models import Q, Sum
-from django.shortcuts import get_object_or_404
-from rest_framework import generics, status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import viewsets, status
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+from django.db.models import Q, Count, Sum, Prefetch
+from django.utils import timezone
+from .models import Itinerary, TripCollaborator, DailyPlan, DayActivity, ActivityLog
+from .serializers import ItineraryListSerializer, ItineraryDetailSerializer, ItineraryCreateUpdateSerializer, DailyPlanSerializer, DayActivitySerializer, ActivityLogSerializer, AddCollaboratorSerializer, TripCollaboratorSerializer
+from .permissions import IsTripOwner, IsTripOwnerOrCollaborator, IsTripParticipant
+from .filters import ItineraryFilter
+from bookings.serializers import AccommodationBookingSerializer, ActivityBookingSerializer
 
-from accounts.models import SearchPreference
-from .models import Collaboration, Itinerary
-from .permissions import IsTripOwner
-from .serializers import ItineraryDetailSerializer, ItineraryListSerializer
+class ItineraryViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    filterset_class = ItineraryFilter
+    search_fields = ['title', 'description']
+    ordering_fields = ['created_at', 'start_date', 'status', 'budget_estimate']
+    ordering = ['-created_at']
 
-User = get_user_model()
+    def get_queryset(self):
+        u = self.request.user
+        return Itinerary.objects.filter(Q(owner=u) | Q(companions=u)).select_related('owner').prefetch_related('companions', Prefetch('daily_plans', queryset=DailyPlan.objects.prefetch_related('day_activities__activity')), Prefetch('collaborators', queryset=TripCollaborator.objects.select_related('user')), 'accommodation_bookings__accommodation', 'activity_bookings__activity').annotate(total_bookings=Count('accommodation_bookings') + Count('activity_bookings')).only('id', 'title', 'description', 'owner__username', 'start_date', 'end_date', 'status', 'budget_estimate', 'cover_image', 'created_at', 'updated_at').distinct()
 
+    def get_serializer_class(self):
+        if self.action == 'list': return ItineraryListSerializer
+        if self.action == 'retrieve': return ItineraryDetailSerializer
+        if self.action in ('create', 'update', 'partial_update'): return ItineraryCreateUpdateSerializer
+        return ItineraryDetailSerializer
 
-@extend_schema(
-    parameters=[
-        OpenApiParameter(name='destination', description='Destination id to filter by', type=int),
-        OpenApiParameter(name='status', description='Trip status to filter by', type=str),
-    ],
-    responses={200: ItineraryListSerializer(many=True)},
-)
+    def get_permissions(self):
+        if self.action in ('update', 'partial_update', 'destroy'): return [IsAuthenticated(), IsTripOwnerOrCollaborator()]
+        if self.action == 'retrieve': return [IsAuthenticated(), IsTripParticipant()]
+        return [IsAuthenticated()]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        if self.action == 'retrieve': ctx['include_logs'] = True
+        return ctx
+
+    @action(detail=True, methods=['post'], url_path='add-collaborator')
+    def add_collaborator(self, request, pk=None):
+        itin = self.get_object()
+        if itin.owner != request.user:
+            return Response({'detail': 'Only owner can add collaborators.'}, status=status.HTTP_403_FORBIDDEN)
+        s = AddCollaboratorSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        c, created = TripCollaborator.objects.get_or_create(itinerary=itin, user_id=s.validated_data['user_id'], defaults={'role': s.validated_data['role']})
+        if not created:
+            return Response({'detail': 'Already a collaborator.'}, status=status.HTTP_400_BAD_REQUEST)
+        ActivityLog.objects.create(itinerary=itin, user=request.user, action='collaborator_added', details={'user_id': s.validated_data['user_id'], 'role': s.validated_data['role']})
+        return Response(TripCollaboratorSerializer(c).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='publish')
+    def publish(self, request, pk=None):
+        itin = self.get_object()
+        if itin.status != 'planning':
+            return Response({'detail': 'Can only publish planning trips.'}, status=status.HTTP_400_BAD_REQUEST)
+        itin.status = 'booked'
+        itin.save(update_fields=['status', 'updated_at'])
+        ActivityLog.objects.create(itinerary=itin, user=request.user, action='status_changed', details={'from': 'planning', 'to': 'booked'})
+        return Response(ItineraryDetailSerializer(itin).data)
+
+    @action(detail=True, methods=['post'], url_path='duplicate')
+    def duplicate(self, request, pk=None):
+        itin = self.get_object()
+        new = Itinerary.objects.create(title=f'{itin.title} (Copy)', description=itin.description, owner=request.user, start_date=itin.start_date, end_date=itin.end_date, budget_estimate=itin.budget_estimate)
+        TripCollaborator.objects.create(itinerary=new, user=request.user, role='owner', accepted_at=timezone.now())
+        for p in itin.daily_plans.all():
+            DailyPlan.objects.create(itinerary=new, day_number=p.day_number, date=p.date, title=p.title, notes=p.notes)
+        ActivityLog.objects.create(itinerary=new, user=request.user, action='itinerary_duplicated', details={'source_id': itin.id})
+        return Response(ItineraryDetailSerializer(new).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='summary')
+    def summary(self, request, pk=None):
+        itin = self.get_object()
+        return Response({'id': itin.id, 'title': itin.title, 'status': itin.get_status_display(), 'total_days': itin.calculate_total_days(), 'total_cost': float(itin.calculate_total_cost()), 'budget_estimate': float(itin.budget_estimate), 'budget_variance': float(itin.budget_estimate - itin.calculate_total_cost()), 'confirmed_accommodations': itin.accommodation_bookings.filter(status='confirmed').count(), 'confirmed_activities': itin.activity_bookings.filter(status='confirmed').count(), 'collaborator_count': itin.collaborators.count()})
+
+class DailyPlanViewSet(viewsets.ModelViewSet):
+    serializer_class = DailyPlanSerializer
+    permission_classes = [IsAuthenticated]
+    def get_queryset(self):
+        return DailyPlan.objects.filter(itinerary__owner=self.request.user).prefetch_related('day_activities__activity').order_by('day_number')
+
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def trip_search(request):
-    """
-    GET: search the current user's trips with custom filters and a simple
-    relevance ranking (destination/country match first).
-    POST: save the current search parameters as a named user preference.
-    """
     if request.method == 'GET':
-        query = request.query_params.get('q', '').strip()
-        destination_id = request.query_params.get('destination')
-        trip_status = request.query_params.get('status')
+        q = request.query_params.get('q', '')
+        st = request.query_params.get('status', '')
+        qf = Q(owner=request.user) | Q(companions=request.user)
+        if q: qf &= (Q(title__icontains=q) | Q(description__icontains=q))
+        if st: qf &= Q(status=st)
+        itins = Itinerary.objects.filter(qf).select_related('owner').prefetch_related('daily_plans', 'collaborators').order_by('-created_at')
+        from rest_framework.pagination import PageNumberPagination
+        pag = PageNumberPagination()
+        page = pag.paginate_queryset(itins, request)
+        s = ItineraryListSerializer(page or itins, many=True)
+        if page is not None: return pag.get_paginated_response(s.data)
+        return Response(s.data)
+    else:
+        profile = request.user.profile
+        profile.bio = f"Search prefs: {request.data.get('query', '')}"
+        profile.save(update_fields=['bio'])
+        return Response({'detail': 'Preferences saved.'})
 
-        queryset = Itinerary.objects.filter(
-            Q(owner=request.user) | Q(collaborators=request.user)
-        ).select_related('destination', 'owner').distinct()
-
-        if query:
-            queryset = queryset.filter(
-                Q(title__icontains=query) | Q(destination__name__icontains=query)
-                | Q(destination__country__icontains=query)
-            )
-        if destination_id:
-            queryset = queryset.filter(destination_id=destination_id)
-        if trip_status:
-            queryset = queryset.filter(status=trip_status)
-
-        # Ranking: exact title matches first, then most recently created.
-        results = sorted(
-            queryset,
-            key=lambda t: (query.lower() not in t.title.lower() if query else False, -t.id),
-        )
-
-        serializer = ItineraryListSerializer(results, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    elif request.method == 'POST':
-        name = request.data.get('name')
-        filters = request.data.get('filters', {})
-        if not name:
-            return Response({'name': 'This field is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        preference = SearchPreference.objects.create(user=request.user, name=name, filters=filters)
-        return Response(
-            {'id': preference.id, 'name': preference.name, 'filters': preference.filters},
-            status=status.HTTP_201_CREATED,
-        )
-
-
-@extend_schema(responses={200: dict})
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def generate_trip_report(request, trip_id):
-    """
-    Generate a comprehensive trip report combining budget, bookings and
-    itinerary data for a single trip owned by (or shared with) the user.
-    """
-    itinerary = get_object_or_404(
-        Itinerary.objects.select_related('destination').prefetch_related(
-            'daily_plans__activities', 'bookings', 'expenses'
-        ),
-        pk=trip_id,
-    )
-    if itinerary.owner != request.user and request.user not in itinerary.collaborators.all():
-        return Response({'error': 'You do not have access to this itinerary.'}, status=status.HTTP_404_NOT_FOUND)
-
     try:
-        bookings_total = itinerary.bookings.aggregate(total=Sum('price'))['total'] or 0
-        expenses_total = itinerary.expenses.aggregate(total=Sum('amount'))['total'] or 0
-        expenses_by_category = list(
-            itinerary.expenses.values('category').annotate(total=Sum('amount')).order_by('category')
-        )
-    except Exception as exc:  # noqa: BLE001 - defensive: report generation must not 500
-        return Response({'error': f'Could not generate report: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
-
-    report = {
-        'trip': {
-            'title': itinerary.title,
-            'destination': itinerary.destination.name,
-            'start_date': itinerary.start_date,
-            'end_date': itinerary.end_date,
-            'duration_days': itinerary.duration_days,
-            'status': itinerary.status,
-        },
-        'budget': {
-            'planned': itinerary.budget,
-            'actual_spent': itinerary.actual_spent,
-            'remaining': itinerary.budget_remaining,
-            'is_over_budget': itinerary.is_over_budget(),
-            'expenses_total': expenses_total,
-            'expenses_by_category': expenses_by_category,
-        },
-        'bookings': {
-            'count': itinerary.bookings.count(),
-            'total_price': bookings_total,
-        },
-        'daily_plans_count': itinerary.daily_plans.count(),
-    }
-    return Response(report, status=status.HTTP_200_OK)
-
-
-class ItineraryListCreateView(generics.ListCreateAPIView):
-    """List the current user's itineraries or create a new one (simple flow, no nested writes)."""
-    serializer_class = ItineraryListSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        """Query optimization: filter to the current user's own itineraries."""
-        return Itinerary.objects.filter(
-            owner=self.request.user
-        ).select_related('destination').prefetch_related('daily_plans')
-
-    def perform_create(self, serializer):
-        serializer.save(owner=self.request.user)
-
-
-class TripCollaborationView(APIView):
-    """
-    Manage trip collaborators - add, update role, or remove.
-    Only the trip owner may perform these actions.
-    """
-    permission_classes = [IsAuthenticated, IsTripOwner]
-
-    def _get_itinerary(self, trip_id, request):
-        itinerary = get_object_or_404(Itinerary, pk=trip_id)
-        self.check_object_permissions(request, itinerary)
-        return itinerary
-
-    def post(self, request, trip_id):
-        """Add a collaborator with a specific role."""
-        itinerary = self._get_itinerary(trip_id, request)
-        user_id = request.data.get('user_id')
-        role = request.data.get('role', 'viewer')
-        user = get_object_or_404(User, pk=user_id)
-        collaboration, created = Collaboration.objects.get_or_create(
-            itinerary=itinerary, user=user, defaults={'role': role}
-        )
-        if not created:
-            return Response({'error': 'User is already a collaborator.'}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(
-            {'id': collaboration.id, 'user': user.username, 'role': collaboration.role},
-            status=status.HTTP_201_CREATED,
-        )
-
-    def patch(self, request, trip_id, user_id):
-        """Update a collaborator's role."""
-        itinerary = self._get_itinerary(trip_id, request)
-        collaboration = get_object_or_404(Collaboration, itinerary=itinerary, user_id=user_id)
-        role = request.data.get('role')
-        if role not in dict(Collaboration.RoleChoices.choices):
-            return Response({'role': 'Invalid role.'}, status=status.HTTP_400_BAD_REQUEST)
-        collaboration.role = role
-        collaboration.save()
-        return Response({'id': collaboration.id, 'role': collaboration.role})
-
-    def delete(self, request, trip_id, user_id):
-        """Remove a collaborator."""
-        itinerary = self._get_itinerary(trip_id, request)
-        collaboration = get_object_or_404(Collaboration, itinerary=itinerary, user_id=user_id)
-        collaboration.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        itin = Itinerary.objects.select_related('owner').prefetch_related('daily_plans__day_activities__activity', 'accommodation_bookings__accommodation', 'activity_bookings__activity', 'collaborators__user').get(pk=trip_id)
+    except Itinerary.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+    if not (itin.owner == request.user or itin.is_collaborator(request.user)):
+        return Response({'detail': 'Access denied.'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        from budgets.models import Budget
+        budget = Budget.objects.get(itinerary=itin)
+        total_spent = budget.expenses.aggregate(total=Sum('amount'))['total'] or 0
+    except Budget.DoesNotExist:
+        total_spent = 0
+    return Response({'trip': {'id': itin.id, 'title': itin.title, 'status': itin.get_status_display(), 'total_days': itin.calculate_total_days()}, 'budget': {'estimated': float(itin.budget_estimate), 'total_bookings': float(itin.calculate_total_cost()), 'total_expenses': float(total_spent)}, 'collaborators': TripCollaboratorSerializer(itin.collaborators.all(), many=True).data, 'daily_plans': DailyPlanSerializer(itin.daily_plans.all(), many=True).data})

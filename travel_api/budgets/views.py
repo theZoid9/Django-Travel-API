@@ -1,56 +1,44 @@
-"""
-budgets/views.py
-
-Class-based views for the per-trip Budget (retrieve/update) and its
-Expense line items (list/create, retrieve/update/delete).
-"""
-from django.shortcuts import get_object_or_404
-from rest_framework import generics
+from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-
-from itineraries.models import Itinerary
+from rest_framework.response import Response
+from django.db.models import Sum
 from .models import Budget, Expense
-from .permissions import IsItineraryOwnerOrCollaborator
-from .serializers import BudgetSerializer, ExpenseSerializer
+from .serializers import BudgetListSerializer, BudgetDetailSerializer, BudgetCreateUpdateSerializer, ExpenseSerializer
+from .filters import BudgetFilter, ExpenseFilter
+from travel_api.pagination import SmallPagination
 
+class BudgetViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    filterset_class = BudgetFilter
+    ordering_fields = ['total_amount', 'created_at']
+    ordering = ['-created_at']
+    def get_queryset(self):
+        return Budget.objects.filter(itinerary__owner=self.request.user).select_related('itinerary').prefetch_related('expenses').all()
+    def get_serializer_class(self):
+        if self.action == 'list': return BudgetListSerializer
+        if self.action == 'retrieve': return BudgetDetailSerializer
+        if self.action in ('create', 'update', 'partial_update'): return BudgetCreateUpdateSerializer
+        return BudgetDetailSerializer
+    @action(detail=True, methods=['get'], url_path='summary')
+    def budget_summary(self, request, pk=None):
+        b = self.get_object()
+        bd = dict(b.expenses.values_list('category').annotate(total=Sum('amount')))
+        return Response({'total_budget': float(b.total_amount), 'total_spent': float(b.calculate_spent()), 'remaining': float(b.calculate_remaining()), 'percentage_used': b.percentage_used(), 'category_breakdown': {k: float(v) for k, v in bd.items()}})
+    @action(detail=True, methods=['get'], url_path='expenses')
+    def list_expenses(self, request, pk=None):
+        b = self.get_object()
+        exps = b.expenses.order_by('-date')
+        page = self.paginate_queryset(exps)
+        s = ExpenseSerializer(page or exps, many=True)
+        return self.get_paginated_response(s.data) if page else Response(s.data)
 
-class BudgetDetailView(generics.RetrieveUpdateAPIView):
-    """Retrieve or update the budget breakdown for a specific itinerary."""
-
-    serializer_class = BudgetSerializer
-    permission_classes = [IsAuthenticated, IsItineraryOwnerOrCollaborator]
-
-    def get_object(self):
-        itinerary = get_object_or_404(Itinerary, pk=self.kwargs['trip_id'])
-        budget, _ = Budget.objects.get_or_create(itinerary=itinerary)
-        self.check_object_permissions(self.request, budget)
-        return budget
-
-
-class ExpenseListCreateView(generics.ListCreateAPIView):
-    """List or create expenses for a specific itinerary."""
-
+class ExpenseViewSet(viewsets.ModelViewSet):
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
-
+    filterset_class = ExpenseFilter
+    pagination_class = SmallPagination
+    ordering_fields = ['amount', 'date', 'category']
+    ordering = ['-date']
     def get_queryset(self):
-        """Query optimization: only fetch expenses for the requested, permitted trip."""
-        itinerary = get_object_or_404(Itinerary, pk=self.kwargs['trip_id'])
-        if itinerary.owner != self.request.user and self.request.user not in itinerary.collaborators.all():
-            return Expense.objects.none()
-        return Expense.objects.filter(itinerary=itinerary).only('id', 'category', 'description', 'amount', 'date')
-
-    def perform_create(self, serializer):
-        itinerary = get_object_or_404(Itinerary, pk=self.kwargs['trip_id'])
-        serializer.save(itinerary=itinerary)
-
-
-class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve, update, or delete a single expense entry."""
-
-    serializer_class = ExpenseSerializer
-    permission_classes = [IsAuthenticated, IsItineraryOwnerOrCollaborator]
-
-    def get_queryset(self):
-        # defer() used to skip the rarely-needed notes field in list-like access patterns
-        return Expense.objects.select_related('itinerary').defer('notes')
+        return Expense.objects.filter(budget__itinerary__owner=self.request.user).select_related('budget').defer('receipt_image', 'updated_at').all()

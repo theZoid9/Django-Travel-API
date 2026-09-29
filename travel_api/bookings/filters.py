@@ -1,27 +1,28 @@
-"""bookings/filters.py - FilterSets for bookings and accommodations."""
-from django_filters import rest_framework as filters
+import django_filters
+from .models import Accommodation, Activity, AccommodationBooking, ActivityBooking
 
-from .models import Accommodation, Booking
-
-
-class BookingFilter(filters.FilterSet):
-    """Filter bookings by status, date range and item type."""
-
-    check_in_after = filters.DateFilter(field_name='check_in', lookup_expr='gte')
-    check_in_before = filters.DateFilter(field_name='check_in', lookup_expr='lte')
-    has_accommodation = filters.BooleanFilter(field_name='accommodation', lookup_expr='isnull', exclude=True)
-
-    class Meta:
-        model = Booking
-        fields = ['status', 'itinerary']
-
-
-class AccommodationFilter(filters.FilterSet):
-    """Filter accommodations by type and nightly price range."""
-
-    min_price = filters.NumberFilter(field_name='price_per_night', lookup_expr='gte')
-    max_price = filters.NumberFilter(field_name='price_per_night', lookup_expr='lte')
-
+class AccommodationFilter(django_filters.FilterSet):
+    min_price = django_filters.NumberFilter(field_name='price_per_night', lookup_expr='gte')
+    max_price = django_filters.NumberFilter(field_name='price_per_night', lookup_expr='lte')
+    destination = django_filters.NumberFilter(field_name='destination__id')
     class Meta:
         model = Accommodation
-        fields = ['destination', 'accommodation_type', 'is_available']
+        fields = ['destination', 'accommodation_type', 'is_available', 'min_price', 'max_price']
+
+class ActivityFilter(django_filters.FilterSet):
+    min_price = django_filters.NumberFilter(field_name='price', lookup_expr='gte')
+    max_price = django_filters.NumberFilter(field_name='price', lookup_expr='lte')
+    destination = django_filters.NumberFilter(field_name='destination__id')
+    class Meta:
+        model = Activity
+        fields = ['destination', 'activity_type', 'is_available', 'min_price', 'max_price']
+
+class AccommodationBookingFilter(django_filters.FilterSet):
+    class Meta:
+        model = AccommodationBooking
+        fields = ['itinerary', 'status', 'check_in']
+
+class ActivityBookingFilter(django_filters.FilterSet):
+    class Meta:
+        model = ActivityBooking
+        fields = ['itinerary', 'status', 'date']

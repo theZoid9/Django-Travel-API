@@ -1,88 +1,42 @@
-"""
-reviews/tests.py
-
-Model tests for Review's single-target validation, plus API tests for
-creating reviews and the helpful custom action.
-"""
-from datetime import date
-
-from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
-from rest_framework import status
+from django.test import TestCase
 from rest_framework.test import APITestCase
-
+from rest_framework import status
+from django.contrib.auth import get_user_model
 from destinations.models import Destination
 from .models import Review
 
 User = get_user_model()
 
-
-def make_destination():
-    return Destination.objects.create(
-        name='Barcelona', country='Spain', description='Gaudi city',
-        category=Destination.CategoryChoices.CITY, climate=Destination.ClimateChoices.TEMPERATE,
-        avg_daily_cost=110,
-    )
-
-
-class ReviewModelTests(APITestCase):
-    """Tests for the Review model's single-target validation."""
-
+class ReviewModelTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='reviewer', password='StrongPass123')
-        self.destination = make_destination()
+        self.user = User.objects.create_user(username='reviewer', email='r@e.com', password='pass1234')
+        self.dest = Destination.objects.create(name='Rome', country='Italy', city='Rome')
+    def test_review_str(self):
+        r = Review.objects.create(user=self.user, destination=self.dest, rating=4, title='Great!')
+        self.assertIn('reviewer', str(r))
+    def test_rating_validation(self):
+        r = Review(user=self.user, destination=self.dest, rating=6, title='Invalid')
+        with self.assertRaises(Exception): r.full_clean()
 
-    def test_clean_requires_exactly_one_target(self):
-        """clean() should raise when no target (destination/accommodation/activity) is set."""
-        review = Review(
-            user=self.user, rating=5, title='Great', content='Loved it', visit_date=date(2026, 1, 1),
-        )
-        with self.assertRaises(ValidationError):
-            review.clean()
+class ReviewSerializerTest(TestCase):
+    def test_anonymous_username(self):
+        u = User.objects.create_user(username='anon', email='a@e.com', password='pass1234')
+        d = Destination.objects.create(name='Berlin', country='Germany', city='Berlin')
+        r = Review.objects.create(user=u, destination=d, rating=3, title='OK', is_anonymous=True)
+        from .serializers import ReviewSerializer
+        self.assertEqual(ReviewSerializer(r).data['username'], 'Anonymous')
 
-    def test_clean_accepts_single_target(self):
-        """clean() should pass when exactly one target is set."""
-        review = Review(
-            user=self.user, destination=self.destination, rating=5,
-            title='Great', content='Loved it', visit_date=date(2026, 1, 1),
-        )
-        review.clean()  # should not raise
-
-
-class ReviewAPITests(APITestCase):
-    """API tests for review creation and the helpful custom action."""
-
+class ReviewAPITest(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='apireviewer', password='StrongPass123')
-        self.client.force_authenticate(user=self.user)
-        self.destination = make_destination()
-
-    def test_create_review(self):
-        """Creating a review should auto-assign the requesting user."""
-        data = {
-            'destination': self.destination.id, 'rating': 4, 'title': 'Nice trip',
-            'content': 'Had a great time', 'visit_date': '2026-01-15',
-        }
-        response = self.client.post('/api/v1/reviews/', data)
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Review.objects.first().user, self.user)
-
-    def test_helpful_action_increments_count(self):
-        """The helpful custom action should increment helpful_count."""
-        review = Review.objects.create(
-            user=self.user, destination=self.destination, rating=5,
-            title='Amazing', content='Best trip ever', visit_date=date(2026, 1, 1),
-        )
-        response = self.client.post(f'/api/v1/reviews/{review.id}/helpful/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['helpful_count'], 1)
-
-    def test_non_owner_cannot_delete_review(self):
-        """A user who didn't write the review should not be able to delete it."""
-        other = User.objects.create_user(username='otherreviewer', email='otherreviewer@example.com', password='pass123456')
-        review = Review.objects.create(
-            user=other, destination=self.destination, rating=3,
-            title='Ok', content='It was fine', visit_date=date(2026, 1, 1),
-        )
-        response = self.client.delete(f'/api/v1/reviews/{review.id}/')
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.user = User.objects.create_user(username='revapi', email='ra@e.com', password='pass1234')
+        self.dest = Destination.objects.create(name='Lisbon', country='Portugal', city='Lisbon')
+    def test_create_review_auth(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post('/api/v1/reviews/', {'destination': self.dest.pk, 'rating': 5, 'title': 'Amazing!'})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+    def test_create_review_unauth(self):
+        resp = self.client.post('/api/v1/reviews/', {'destination': self.dest.pk, 'rating': 5, 'title': 'Hi'})
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+    def test_list_reviews(self):
+        resp = self.client.get('/api/v1/reviews/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
