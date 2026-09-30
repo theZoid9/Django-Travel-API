@@ -11,7 +11,7 @@ Django, Django REST Framework, Simple JWT, django-filter, drf-spectacular, pytho
 ```bash
 git clone <your-repo-url> && cd travel_api
 python -m venv venv
-source venv/bin/activate        # Windows: venv/Scripts/activate
+source venv/bin/activate        # Windows: source venv/Scripts/activate
 pip install -r requirements.txt
 cp .env.example .env            # then edit values
 ```
