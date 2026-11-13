@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from datetime import date
 from django.test import TestCase
 from rest_framework.test import APITestCase
@@ -51,5 +52,5 @@ class AccommodationBookingValidationTest(TestCase):
         accom = Accommodation.objects.create(name='Hotel', destination=dest, accommodation_type='hotel', price_per_night=50)
         itin = Itinerary.objects.create(title='Trip', owner=user, start_date=date(2025,1,1), end_date=date(2025,1,10))
         b = AccommodationBooking(itinerary=itin, accommodation=accom, check_in=date(2025,1,5), check_out=date(2025,1,3))
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             b.full_clean()

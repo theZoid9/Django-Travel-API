@@ -37,8 +37,8 @@ urlpatterns = [
     path('api/v1/destinations/', include('destinations.urls')),
     path('api/v1/booking/', include('bookings.urls')),
     path('api/v1/itinerary/', include('itineraries.urls')),
-    path('api/v1/reviews-app/', include('reviews.urls')),
-    path('api/v1/budgets-app/', include('budgets.urls')),
+    path('api/v1/', include('reviews.urls')),
+    path('api/v1/', include('budgets.urls')),
     path('api/v1/', include(router.urls)),
 ]
 

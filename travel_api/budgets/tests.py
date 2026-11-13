@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from datetime import date
 from decimal import Decimal
 from django.test import TestCase
@@ -38,7 +39,7 @@ class ExpenseModelTest(TestCase):
         i = Itinerary.objects.create(title='Trip', owner=u, start_date=date(2025,1,1), end_date=date(2025,1,5))
         b = Budget.objects.create(itinerary=i, total_amount=1000)
         e = Expense(budget=b, category='other', amount=-10, description='Invalid', date=date(2025,1,2))
-        with self.assertRaises(Exception): e.full_clean()
+        with self.assertRaises(ValidationError): e.full_clean()
 
 class BudgetAPITest(APITestCase):
     def setUp(self):
@@ -58,5 +59,5 @@ class ExpenseSerializerTest(TestCase):
         u = User.objects.create_user(username='su', email='su@e.com', password='pass1234')
         i = Itinerary.objects.create(title='Trip', owner=u, start_date=date(2025,1,1), end_date=date(2025,1,5))
         b = Budget.objects.create(itinerary=i, total_amount=1000)
-        s = ExpenseSerializer(data={'budget': b.pk, 'category': 'food', 'amount': -5, 'description': 'Bad', 'date': '2025-01-02'})
+        s = ExpenseSerializer(context={'request': type('Request', (), {'user': u})()}, data={'budget': b.pk, 'category': 'food', 'amount': -5, 'description': 'Bad', 'date': '2025-01-02'})
         self.assertFalse(s.is_valid())

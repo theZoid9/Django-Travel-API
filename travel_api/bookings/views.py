@@ -1,6 +1,6 @@
 from rest_framework import viewsets, status, generics
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework.response import Response
 from django.db import transaction
 from .models import Accommodation, Activity, AccommodationBooking, ActivityBooking
@@ -19,7 +19,7 @@ class AccommodationViewSet(viewsets.ModelViewSet):
         if self.action == 'list': return AccommodationListSerializer
         return AccommodationDetailSerializer
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated()]
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAdminUser()]
         return [AllowAny()]
 
 class ActivityViewSet(viewsets.ModelViewSet):
@@ -29,12 +29,12 @@ class ActivityViewSet(viewsets.ModelViewSet):
     ordering_fields = ['price', 'rating', 'duration_minutes', 'name']
     ordering = ['name']
     def get_queryset(self):
-        return Activity.objects.select_related('destination').only('id', 'name', 'destination__name', 'activity_type', 'price', 'duration_minutes', 'rating', 'image', 'is_available', 'max_participants', 'description').all()
+        return Activity.objects.select_related('destination').all()
     def get_serializer_class(self):
         if self.action == 'list': return ActivityListSerializer
         return ActivityDetailSerializer
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated()]
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAdminUser()]
         return [AllowAny()]
 
 class AccommodationBookingListCreateView(generics.ListCreateAPIView):
@@ -51,10 +51,14 @@ class ActivityBookingListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return ActivityBooking.objects.select_related('itinerary', 'activity').filter(itinerary__owner=self.request.user).order_by('-created_at')
 
-@api_view(['POST'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def bulk_update_bookings(request):
+    if request.method == 'GET':
+        return Response({'types': ['accommodation', 'activity'], 'statuses': list(AccommodationBooking.BookingStatus.values)})
     bookings_data = request.data.get('bookings', [])
+    if not isinstance(bookings_data, list) or any(not isinstance(item, dict) for item in bookings_data):
+        return Response({'detail': 'bookings must be a list of objects.'}, status=400)
     if not bookings_data:
         return Response({'detail': 'No bookings provided.'}, status=status.HTTP_400_BAD_REQUEST)
     success_count = 0
@@ -66,6 +70,10 @@ def bulk_update_bookings(request):
                 btype = item.get('type')
                 bid = item.get('id')
                 new_status = item.get('status')
+                if new_status not in AccommodationBooking.BookingStatus.values or not isinstance(bid, int) or isinstance(bid, bool) or bid < 1:
+                    failure_count += 1
+                    errors.append({'id': bid, 'error': 'Invalid status or ID.'})
+                    continue
                 if not all([btype, bid, new_status]):
                     failure_count += 1
                     errors.append({'id': bid, 'error': 'Missing fields.'})
@@ -91,3 +99,15 @@ def bulk_update_bookings(request):
     except Exception as e:
         return Response({'detail': 'Bulk op failed.', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     return Response({'success_count': success_count, 'failure_count': failure_count, 'errors': errors})
+
+class AccommodationBookingDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = AccommodationBookingSerializer
+    permission_classes = [IsAuthenticated]
+    def get_queryset(self):
+        return AccommodationBooking.objects.filter(itinerary__owner=self.request.user).select_related('itinerary', 'accommodation')
+
+class ActivityBookingDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = ActivityBookingSerializer
+    permission_classes = [IsAuthenticated]
+    def get_queryset(self):
+        return ActivityBooking.objects.filter(itinerary__owner=self.request.user).select_related('itinerary', 'activity')

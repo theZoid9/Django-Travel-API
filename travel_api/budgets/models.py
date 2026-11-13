@@ -14,6 +14,7 @@ class Budget(models.Model):
     def __str__(self):
         return f'{self.currency} {self.total_amount} for {self.itinerary.title}'
     def calculate_spent(self):
+        if hasattr(self, 'spent_total'): return self.spent_total
         r = self.expenses.aggregate(total=models.Sum('amount'))
         return r['total'] or 0
     def calculate_remaining(self):

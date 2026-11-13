@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from datetime import date
 from django.test import TestCase
 from rest_framework.test import APITestCase
@@ -18,7 +19,7 @@ class ItineraryModelTest(TestCase):
         self.assertEqual(i.calculate_total_days(), 5)
     def test_end_before_start(self):
         i = Itinerary(title='Bad', owner=self.user, start_date=date(2025,6,10), end_date=date(2025,6,1))
-        with self.assertRaises(Exception): i.full_clean()
+        with self.assertRaises(ValidationError): i.full_clean()
     def test_is_collaborator(self):
         i = Itinerary.objects.create(title='Trip', owner=self.user, start_date=date(2025,6,1), end_date=date(2025,6,5))
         other = User.objects.create_user(username='other', email='o@e.com', password='pass1234')

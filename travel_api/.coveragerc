@@ -1,0 +1,7 @@
+[run]
+source = accounts,bookings,budgets,destinations,itineraries,reviews,travel_api
+omit = */tests.py, */test_*.py, */migrations/*
+
+[report]
+show_missing = True
+precision = 2

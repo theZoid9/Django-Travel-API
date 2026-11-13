@@ -2,6 +2,10 @@ import django_filters
 from .models import Destination, Category
 
 class DestinationFilter(django_filters.FilterSet):
+    q = django_filters.CharFilter(method='filter_query')
+    def filter_query(self, queryset, name, value):
+        from django.db.models import Q
+        return queryset.filter(Q(name__icontains=value) | Q(city__icontains=value) | Q(description__icontains=value))
     country = django_filters.CharFilter(lookup_expr='icontains')
     city = django_filters.CharFilter(lookup_expr='icontains')
     min_rating = django_filters.NumberFilter(field_name='avg_rating', lookup_expr='gte')

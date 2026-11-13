@@ -14,7 +14,7 @@ class BudgetViewSet(viewsets.ModelViewSet):
     ordering_fields = ['total_amount', 'created_at']
     ordering = ['-created_at']
     def get_queryset(self):
-        return Budget.objects.filter(itinerary__owner=self.request.user).select_related('itinerary').prefetch_related('expenses').all()
+        return Budget.objects.filter(itinerary__owner=self.request.user).select_related('itinerary').annotate(spent_total=Sum('expenses__amount', default=0)).prefetch_related('expenses').all()
     def get_serializer_class(self):
         if self.action == 'list': return BudgetListSerializer
         if self.action == 'retrieve': return BudgetDetailSerializer
@@ -41,4 +41,4 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     ordering_fields = ['amount', 'date', 'category']
     ordering = ['-date']
     def get_queryset(self):
-        return Expense.objects.filter(budget__itinerary__owner=self.request.user).select_related('budget').defer('receipt_image', 'updated_at').all()
+        return Expense.objects.filter(budget__itinerary__owner=self.request.user).select_related('budget').all()

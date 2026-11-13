@@ -37,6 +37,7 @@ class Itinerary(models.Model):
     def calculate_total_days(self):
         return (self.end_date - self.start_date).days + 1
     def calculate_total_cost(self):
+        if hasattr(self, 'booking_cost'): return self.booking_cost
         a = sum(b.total_price for b in self.accommodation_bookings.filter(status='confirmed'))
         act = sum(b.total_price for b in self.activity_bookings.filter(status='confirmed'))
         return a + act

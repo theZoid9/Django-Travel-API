@@ -29,7 +29,7 @@ class DestinationViewSet(viewsets.ModelViewSet):
     ordering = ['name']
 
     def get_queryset(self):
-        return Destination.objects.select_related('category').prefetch_related('tags', 'photos').annotate(review_count=Count('reviews', distinct=True), activity_count=Count('activities', distinct=True)).all()
+        return Destination.objects.select_related('category').prefetch_related('tags', 'photos').annotate(review_count=Count('reviews', distinct=True), activity_count=Count('activities', distinct=True)).order_by('name', 'pk')
 
     def get_serializer_class(self):
         if self.action == 'list': return DestinationListSerializer
@@ -38,7 +38,7 @@ class DestinationViewSet(viewsets.ModelViewSet):
         return DestinationDetailSerializer
 
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAdminUser()]
+        if self.action in ('create', 'update', 'partial_update', 'destroy', 'upload_photo'): return [IsAdminUser()]
         return [AllowAny()]
 
     @action(detail=True, methods=['get'], url_path='photos')
@@ -65,7 +65,12 @@ class DestinationViewSet(viewsets.ModelViewSet):
     def search_advanced(self, request):
         query = request.query_params.get('q', '')
         country = request.query_params.get('country', '')
-        min_rating = request.query_params.get('min_rating', 0)
+        from rest_framework import serializers
+        field = serializers.FloatField(min_value=0, max_value=5)
+        min_rating = field.run_validation(request.query_params.get('min_rating', 0))
+        import math
+        if not math.isfinite(min_rating):
+            raise serializers.ValidationError({'min_rating': 'Enter a finite rating from 0 to 5.'})
         q_filter = Q()
         if query:
             q_filter |= Q(name__icontains=query) | Q(city__icontains=query) | Q(description__icontains=query)
@@ -84,5 +89,6 @@ class DestinationPhotoUploadView(generics.CreateAPIView):
     parser_classes = [parsers.MultiPartParser]
     def perform_create(self, serializer):
         from .models import Destination
-        dest = Destination.objects.get(pk=self.kwargs['destination_id'])
+        from django.shortcuts import get_object_or_404
+        dest = get_object_or_404(Destination, pk=self.kwargs['destination_id'])
         serializer.save(destination=dest)

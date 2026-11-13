@@ -1,3 +1,4 @@
+from travel_api.access import OwnedItineraryMixin
 from rest_framework import serializers
 from .models import Budget, Expense
 
@@ -7,6 +8,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
         model = Expense
         fields = ['id', 'budget', 'category', 'category_display', 'amount', 'description', 'date', 'receipt_image', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
+    def validate_budget(self, value):
+        if value.itinerary.owner_id != self.context['request'].user.pk:
+            raise serializers.ValidationError('Choose a budget you own.')
+        return value
     def validate_amount(self, value):
         if value <= 0: raise serializers.ValidationError('Amount must be positive.')
         return value
@@ -36,7 +41,7 @@ class BudgetDetailSerializer(BudgetListSerializer):
         rep['category_breakdown'] = {k: float(v) for k, v in bd.items()}
         return rep
 
-class BudgetCreateUpdateSerializer(serializers.ModelSerializer):
+class BudgetCreateUpdateSerializer(OwnedItineraryMixin, serializers.ModelSerializer):
     class Meta:
         model = Budget
         fields = ['itinerary', 'total_amount', 'currency']

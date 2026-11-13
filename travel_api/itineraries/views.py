@@ -8,6 +8,7 @@ from .models import Itinerary, TripCollaborator, DailyPlan, DayActivity, Activit
 from .serializers import ItineraryListSerializer, ItineraryDetailSerializer, ItineraryCreateUpdateSerializer, DailyPlanSerializer, DayActivitySerializer, ActivityLogSerializer, AddCollaboratorSerializer, TripCollaboratorSerializer
 from .permissions import IsTripOwner, IsTripOwnerOrCollaborator, IsTripParticipant
 from .filters import ItineraryFilter
+from .querysets import with_booking_totals
 from bookings.serializers import AccommodationBookingSerializer, ActivityBookingSerializer
 
 class ItineraryViewSet(viewsets.ModelViewSet):
@@ -19,7 +20,7 @@ class ItineraryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         u = self.request.user
-        return Itinerary.objects.filter(Q(owner=u) | Q(companions=u)).select_related('owner').prefetch_related('companions', Prefetch('daily_plans', queryset=DailyPlan.objects.prefetch_related('day_activities__activity')), Prefetch('collaborators', queryset=TripCollaborator.objects.select_related('user')), 'accommodation_bookings__accommodation', 'activity_bookings__activity').annotate(total_bookings=Count('accommodation_bookings') + Count('activity_bookings')).only('id', 'title', 'description', 'owner__username', 'start_date', 'end_date', 'status', 'budget_estimate', 'cover_image', 'created_at', 'updated_at').distinct()
+        return with_booking_totals(Itinerary.objects.filter(Q(owner=u) | Q(companions=u))).select_related('owner').prefetch_related('companions', Prefetch('daily_plans', queryset=DailyPlan.objects.prefetch_related('day_activities__activity')), Prefetch('collaborators', queryset=TripCollaborator.objects.select_related('user')), 'accommodation_bookings__accommodation', 'activity_bookings__activity').annotate(total_bookings=Count('accommodation_bookings', distinct=True) + Count('activity_bookings', distinct=True)).only('id', 'title', 'description', 'owner__username', 'start_date', 'end_date', 'status', 'budget_estimate', 'cover_image', 'created_at', 'updated_at').distinct()
 
     def get_serializer_class(self):
         if self.action == 'list': return ItineraryListSerializer
@@ -28,7 +29,7 @@ class ItineraryViewSet(viewsets.ModelViewSet):
         return ItineraryDetailSerializer
 
     def get_permissions(self):
-        if self.action in ('update', 'partial_update', 'destroy'): return [IsAuthenticated(), IsTripOwnerOrCollaborator()]
+        if self.action in ('update', 'partial_update', 'destroy', 'publish'): return [IsAuthenticated(), IsTripOwnerOrCollaborator()]
         if self.action == 'retrieve': return [IsAuthenticated(), IsTripParticipant()]
         return [IsAuthenticated()]
 
@@ -114,8 +115,8 @@ def generate_trip_report(request, trip_id):
         return Response({'detail': 'Access denied.'}, status=status.HTTP_403_FORBIDDEN)
     try:
         from budgets.models import Budget
-        budget = Budget.objects.get(itinerary=itin)
-        total_spent = budget.expenses.aggregate(total=Sum('amount'))['total'] or 0
+        from budgets.models import Expense
+        total_spent = Expense.objects.filter(budget__itinerary=itin).aggregate(total=Sum('amount'))['total'] or 0
     except Budget.DoesNotExist:
         total_spent = 0
     return Response({'trip': {'id': itin.id, 'title': itin.title, 'status': itin.get_status_display(), 'total_days': itin.calculate_total_days()}, 'budget': {'estimated': float(itin.budget_estimate), 'total_bookings': float(itin.calculate_total_cost()), 'total_expenses': float(total_spent)}, 'collaborators': TripCollaboratorSerializer(itin.collaborators.all(), many=True).data, 'daily_plans': DailyPlanSerializer(itin.daily_plans.all(), many=True).data})

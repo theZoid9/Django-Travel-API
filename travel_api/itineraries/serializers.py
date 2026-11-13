@@ -1,3 +1,4 @@
+from travel_api.access import OwnedItineraryMixin
 from rest_framework import serializers
 from django.utils import timezone
 from .models import Itinerary, TripCollaborator, DailyPlan, DayActivity, ActivityLog
@@ -16,12 +17,12 @@ class DayActivitySerializer(serializers.ModelSerializer):
         fields = ['id', 'activity', 'activity_name', 'start_time', 'end_time', 'notes', 'order']
         read_only_fields = ['id']
 
-class DailyPlanSerializer(serializers.ModelSerializer):
+class DailyPlanSerializer(OwnedItineraryMixin, serializers.ModelSerializer):
     day_activities = DayActivitySerializer(many=True, read_only=True)
     activity_count = serializers.SerializerMethodField(help_text='Activity count')
     class Meta:
         model = DailyPlan
-        fields = ['id', 'day_number', 'date', 'title', 'notes', 'day_activities', 'activity_count']
+        fields = ['id', 'itinerary', 'day_number', 'date', 'title', 'notes', 'day_activities', 'activity_count']
         read_only_fields = ['id']
     def get_activity_count(self, obj): return obj.day_activities.count()
 
@@ -61,7 +62,7 @@ class ItineraryDetailSerializer(BaseItinerarySerializer):
     def to_representation(self, instance):
         rep = super().to_representation(instance)
         if self.context.get('include_logs', False):
-            rep['recent_logs'] = ActivityLogSerializer(instance.activity_logs.all()[:20], many=True).data
+            rep['recent_logs'] = ActivityLogSerializer(instance.activity_logs.select_related('user').all()[:20], many=True).data
         return rep
 
 class ItineraryCreateUpdateSerializer(serializers.ModelSerializer):
@@ -69,7 +70,9 @@ class ItineraryCreateUpdateSerializer(serializers.ModelSerializer):
         model = Itinerary
         fields = ['title', 'description', 'start_date', 'end_date', 'status', 'budget_estimate', 'cover_image']
     def validate(self, attrs):
-        if attrs.get('start_date') and attrs.get('end_date') and attrs['end_date'] < attrs['start_date']:
+        start = attrs.get('start_date', getattr(self.instance, 'start_date', None))
+        end = attrs.get('end_date', getattr(self.instance, 'end_date', None))
+        if start and end and end < start:
             raise serializers.ValidationError({'end_date': 'End date must be >= start date.'})
         return attrs
     def create(self, validated_data):

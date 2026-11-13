@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -16,7 +17,7 @@ class ReviewModelTest(TestCase):
         self.assertIn('reviewer', str(r))
     def test_rating_validation(self):
         r = Review(user=self.user, destination=self.dest, rating=6, title='Invalid')
-        with self.assertRaises(Exception): r.full_clean()
+        with self.assertRaises(ValidationError): r.full_clean()
 
 class ReviewSerializerTest(TestCase):
     def test_anonymous_username(self):

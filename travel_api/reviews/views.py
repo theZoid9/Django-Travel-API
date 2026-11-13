@@ -1,3 +1,4 @@
+from travel_api.access import IsReviewAuthorOrReadOnly
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import Review, ActivityReview
@@ -13,8 +14,18 @@ class ReviewViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Review.objects.select_related('user', 'destination').all()
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated()]
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated(), IsReviewAuthorOrReadOnly()]
         return [AllowAny()]
+    def perform_update(self, serializer):
+        previous = self.get_object().destination
+        review = serializer.save()
+        previous.update_average_rating()
+        if previous.pk != review.destination_id:
+            review.destination.update_average_rating()
+    def perform_destroy(self, instance):
+        destination = instance.destination
+        instance.delete()
+        destination.update_average_rating()
     def perform_create(self, serializer):
         review = serializer.save()
         review.destination.update_average_rating()
@@ -28,5 +39,5 @@ class ActivityReviewViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return ActivityReview.objects.select_related('user', 'activity').all()
     def get_permissions(self):
-        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated()]
+        if self.action in ('create', 'update', 'partial_update', 'destroy'): return [IsAuthenticated(), IsReviewAuthorOrReadOnly()]
         return [AllowAny()]
